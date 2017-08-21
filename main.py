@@ -24,6 +24,9 @@ show_status_messages = True
 show_view_status = True
 auto_show_diagnostics_panel = True
 show_diagnostics_phantoms = True
+log_debug = False
+log_server = True
+log_stderr = False
 diagnostic_error_region_scope = MARKUP_ERROR
 
 configs = []  # type: List[ClientConfig]
@@ -243,7 +246,11 @@ def load_settings():
     global auto_show_diagnostics_panel
     global show_diagnostics_phantoms
     global diagnostic_error_region_scope
+    global log_debug
+    global log_server
+    global log_stderr
     global configs
+
     settings_obj = sublime.load_settings("LSP.sublime-settings")
 
     configs = []
@@ -259,6 +266,10 @@ def load_settings():
     auto_show_diagnostics_panel = settings_obj.get("auto_show_diagnostics_panel", True)
     show_diagnostics_phantoms = settings_obj.get("show_diagnostics_phantoms", True)
     diagnostic_error_region_scope = settings_obj.get("diagnostic_error_region_scope", MARKUP_ERROR)
+    log_debug = settings_obj.get("log_debug", False)
+    log_server = settings_obj.get("log_server", True)
+    log_stderr = settings_obj.get("log_stderr", False)
+
     settings_obj.add_on_change("_on_new_settings", load_settings)
 
 
@@ -385,9 +396,9 @@ class Client(object):
         """
         while self.process.poll() is None:
             try:
-                error = self.process.stderr.readline().decode('UTF-8')
-                if len(error) > 0:
-                    printf("(stderr): ", error.strip())
+                content = self.process.stderr.readline()
+                if log_stderr and len(content) > 0:
+                    printf("(stderr): ", content.strip())
             except IOError:
                 printf("LSP stderr process ending due to exception: ",
                        sys.exc_info())
@@ -422,7 +433,7 @@ class Client(object):
         elif method == "window/showMessage":
             sublime.active_window().message_dialog(
                 response.get("params").get("message"))
-        elif method == "window/logMessage":
+        elif method == "window/logMessage" and log_server:
             server_log(self.process.args[0],
                        response.get("params").get("message"))
         else:
@@ -431,8 +442,8 @@ class Client(object):
 
 def debug(*args):
     """Print args to the console if the "debug" setting is True."""
-    # if settings.get('debug'):
-    printf(*args)
+    if log_debug:
+        printf(*args)
 
 
 def server_log(binary, *args):
@@ -819,11 +830,11 @@ def format_severity(severity: int) -> str:
 
 
 def format_diagnostic(diagnostic: Diagnostic) -> str:
-    (line, character) = diagnostic.range.start
-    location = "{}:{}".format(line + 1, character + 1)
-    formattedMessage = diagnostic.message.replace("\n", "").replace("\r", "")
-    return "\t{:<8}\t{:<8}\t{:<8}\t{}".format(
-        location, diagnostic.source, format_severity(diagnostic.severity), formattedMessage)
+    line, column = diagnostic.range.start
+    location = "{:>8}:{:<4}".format(line + 1, column + 1)
+    message = diagnostic.message.replace("\n", " ").replace("\r", "")
+    return " {}\t{:<12}\t{:<10}\t{}".format(
+        location, diagnostic.source, format_severity(diagnostic.severity), message)
 
 
 class LspSymbolRenameCommand(sublime_plugin.TextCommand):
@@ -996,23 +1007,27 @@ def is_at_word(view: sublime.View, event) -> bool:
         return False
 
 
+OUTPUT_PANEL_SETTINGS = {
+    "auto_indent": False,
+    "draw_indent_guides": False,
+    "draw_white_space": "None",
+    "gutter": False,
+    'is_widget': True,
+    "line_numbers": False,
+    "margin": 3,
+    "match_brackets": False,
+    "scroll_past_end": False,
+    "tab_size": 4,
+    "translate_tabs_to_spaces": False,
+    "word_wrap": False
+}
+
+
 def create_output_panel(window: sublime.Window, name: str) -> sublime.View:
     panel = window.create_output_panel(name)
     settings = panel.settings()
-    # Don't mess with my indenting Sublime!
-    settings.set("auto_indent", False)
-    # Don't need gutter or line numbers
-    settings.set("gutter", False)
-    # Don't draw indent guide lines
-    settings.set("indent_guide_options", [])
-    # Let all plugins no to leave this view alone
-    settings.set('is_widget', True)
-    # Set a tab size wich may result in best table view
-    settings.set("tab_size", 8)
-    # Don't translate anything.
-    settings.set("translate_tabs_to_spaces", False)
-    base_dir = get_project_path(window)
-    settings.set("result_base_dir", base_dir)
+    for key, value in OUTPUT_PANEL_SETTINGS.items():
+        settings.set(key, value)
     return panel
 
 
@@ -1023,7 +1038,7 @@ def ensure_references_panel(window: sublime.Window):
 def create_references_panel(window: sublime.Window):
     panel = create_output_panel(window, "references")
     panel.settings().set("result_file_regex",
-                         r"^\s+(\S*)\s+([0-9]+):?([0-9]+)$")
+                         r"^\s+\S\s+(\S.+)\s+(\d+):?(\d+)$")
     panel.assign_syntax("Packages/" + PLUGIN_NAME +
                         "/Syntaxes/References.sublime-syntax")
     return panel
@@ -1060,6 +1075,7 @@ class LspSymbolReferencesCommand(sublime_plugin.TextCommand):
 
         if (len(references)) > 0:
             panel = ensure_references_panel(window)
+            panel.settings().set("result_base_dir", base_dir)
             panel.set_read_only(False)
             panel.run_command("lsp_clear_panel")
             panel.run_command('append', {
@@ -1086,7 +1102,7 @@ def format_reference(reference, base_dir):
     start = reference.get('range').get('start')
     file_path = uri_to_filename(reference.get("uri"))
     relative_file_path = os.path.relpath(file_path, base_dir)
-    return "\t{}\t{}:{}".format(
+    return " ◌ {} {}:{}".format(
         relative_file_path,
         start.get('line') + 1,
         start.get('character') + 1
@@ -1158,7 +1174,7 @@ def update_diagnostics_in_view(view: sublime.View, diagnostics: 'List[Diagnostic
                              "dot",
                              sublime.DRAW_SQUIGGLY_UNDERLINE | UNDERLINE_FLAGS)
         else:
-            view.erase_regions("errors")
+            view.erase_regions("lsp-errors")
 
 
 def remove_diagnostics(view: sublime.View):
@@ -1207,7 +1223,7 @@ class LspShowDiagnosticsPanelCommand(sublime_plugin.WindowCommand):
 
 def create_diagnostics_panel(window):
     panel = create_output_panel(window, "diagnostics")
-    panel.settings().set("result_file_regex", r"^(.*):$")
+    panel.settings().set("result_file_regex", r"^\s*\S\s+(\S.*):$")
     panel.settings().set("result_line_regex", r"^\s+([0-9]+):?([0-9]+).*$")
     panel.assign_syntax("Packages/" + PLUGIN_NAME +
                         "/Syntaxes/Diagnostics.sublime-syntax")
@@ -1228,6 +1244,7 @@ def update_diagnostics_panel(window):
     if window.id() in window_file_diagnostics:
         active_panel = window.active_panel()
         is_active_panel = (active_panel == "output.diagnostics")
+        panel.settings().set("result_base_dir", base_dir)
         panel.set_read_only(False)
         panel.run_command("lsp_clear_panel")
         file_diagnostics = window_file_diagnostics[window.id()]
@@ -1248,7 +1265,7 @@ def update_diagnostics_panel(window):
 
 def append_diagnostics(panel, file_path, origin_diagnostics):
     panel.run_command('append',
-                      {'characters': file_path + ":\n",
+                      {'characters':  " ◌ {}:\n".format(file_path),
                        'force': True})
     for origin, diagnostics in origin_diagnostics.items():
         for diagnostic in diagnostics:
@@ -1384,63 +1401,6 @@ class Events:
                 listener(*args)
 
 
-def get_diagnostics_for_view(view: sublime.View) -> 'List[Diagnostic]':
-    window = view.window()
-    file_path = view.file_name()
-    origin = 'lsp'
-    if window.id() in window_file_diagnostics:
-        file_diagnostics = window_file_diagnostics[window.id()]
-        if file_path in file_diagnostics:
-            if origin in file_diagnostics[file_path]:
-                return file_diagnostics[file_path][origin]
-    return []
-
-
-class DiagnosticsHoverHandler(sublime_plugin.ViewEventListener):
-    def __init__(self, view):
-        self.view = view
-
-    @classmethod
-    def is_applicable(cls, settings):
-        syntax = settings.get('syntax')
-        return is_supported_syntax(syntax)
-
-    def on_hover(self, point, hover_zone):
-        (row, col) = self.view.rowcol(point)
-        diagnostics = get_diagnostics_for_view(self.view)
-        line_diagnostics = []
-        for diagnostic in diagnostics:
-            (start_line, _) = diagnostic.range.start
-            (end_line, _) = diagnostic.range.end
-            if row >= start_line and row <= end_line:
-                line_diagnostics.append(diagnostic)
-        if line_diagnostics:
-            self.show_hover(point, line_diagnostics)
-
-    def show_hover(self, point, diagnostics):
-        formatted = list("{}: {}".format(diagnostic.source, diagnostic.message) for diagnostic in diagnostics)
-        formatted.append("[{}]({})".format('Code Actions', 'code-actions'))
-        mdpopups.show_popup(
-            self.view,
-            "\n".join(formatted),
-            css=".mdpopups .lsp_hover { margin: 4px; }",
-            md=True,
-            flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
-            location=point,
-            wrapper_class="lsp_hover",
-            max_width=800,
-            on_navigate=lambda href: self.on_navigate(href, point, diagnostics))
-
-    def on_navigate(self, href, point, diagnostics):
-        # TODO: don't mess with the user's cursor.
-        # Instead, pass code actions requested from phantoms & hovers should call lsp_code_actions with
-        # diagnostics as args, positioning resulting UI close to the clicked link.
-        sel = self.view.sel()
-        sel.clear()
-        sel.add(sublime.Region(point, point))
-        self.view.run_command("lsp_code_actions")
-
-
 class HoverHandler(sublime_plugin.ViewEventListener):
     def __init__(self, view):
         self.view = view
@@ -1451,6 +1411,13 @@ class HoverHandler(sublime_plugin.ViewEventListener):
         return is_supported_syntax(syntax)
 
     def on_hover(self, point, hover_zone):
+        line_diagnostics = get_line_diagnostics(self.view, point)
+        if len(line_diagnostics) > 0:
+            self.show_diagnostics_hover(point, line_diagnostics)
+        else:
+            self.request_symbol_hover(point, hover_zone)
+
+    def request_symbol_hover(self, point, hover_zone):
         client = client_for_view(self.view)
         if not client:
             return
@@ -1475,6 +1442,29 @@ class HoverHandler(sublime_plugin.ViewEventListener):
             return
 
         self.show_hover(point, contents)
+
+    def show_diagnostics_hover(self, point, diagnostics):
+        formatted = list("{}: {}".format(diagnostic.source, diagnostic.message) for diagnostic in diagnostics)
+        formatted.append("[{}]({})".format('Code Actions', 'code-actions'))
+        mdpopups.show_popup(
+            self.view,
+            "\n".join(formatted),
+            css=".mdpopups .lsp_hover { margin: 4px; }",
+            md=True,
+            flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+            location=point,
+            wrapper_class="lsp_hover",
+            max_width=800,
+            on_navigate=lambda href: self.on_diagnostics_navigate(self, href, point, diagnostics))
+
+    def on_diagnostics_navigate(self, href, point, diagnostics):
+        # TODO: don't mess with the user's cursor.
+        # Instead, pass code actions requested from phantoms & hovers should call lsp_code_actions with
+        # diagnostics as args, positioning resulting UI close to the clicked link.
+        sel = self.view.sel()
+        sel.clear()
+        sel.add(sublime.Region(point, point))
+        self.view.run_command("lsp_code_actions")
 
     def show_hover(self, point, contents):
         formatted = []
@@ -1546,11 +1536,12 @@ class CompletionHandler(sublime_plugin.EventListener):
         label = item.get("label")
         # kind = item.get("kind")
         detail = item.get("detail")
-        insertText = None
+        insertText = label
         if item.get("insertTextFormat") == 2:
             insertText = item.get("insertText")
-        return ("{}\t{}".format(label, detail), insertText
-                if insertText else label)
+        if insertText[0] == '$':  # sublime needs leading '$' escaped.
+            insertText = '\$' + insertText[1:]
+        return ("{}\t{}".format(label, detail), insertText)
 
     def handle_response(self, response):
         items = response["items"] if isinstance(response,
@@ -1646,19 +1637,28 @@ class SignatureHelpListener(sublime_plugin.ViewEventListener):
                     max_width=800)
 
 
-def get_line_diagnostics(view: sublime.View, row: int, col: int) -> 'List[Diagnostic]':
+def get_line_diagnostics(view, point):
+    (row, col) = view.rowcol(point)
+    diagnostics = get_diagnostics_for_view(view)
     line_diagnostics = []
-    file_diagnostics = window_file_diagnostics.get(view.window().id(), {})
-    if view.file_name() in file_diagnostics:
-        source_diagnostics = file_diagnostics[view.file_name()]
-        diagnostics = source_diagnostics.get('lsp', [])
-        if len(diagnostics) > 0:
-            for diagnostic in diagnostics:
-                (start_line, _) = diagnostic.range.start
-                (end_line, _) = diagnostic.range.end
-                if row >= start_line and row <= end_line:
-                    line_diagnostics.append(diagnostic)
+    for diagnostic in diagnostics:
+        (start_line, _) = diagnostic.range.start
+        (end_line, _) = diagnostic.range.end
+        if row >= start_line and row <= end_line:
+            line_diagnostics.append(diagnostic)
     return line_diagnostics
+
+
+def get_diagnostics_for_view(view: sublime.View) -> 'List[Diagnostic]':
+    window = view.window()
+    file_path = view.file_name()
+    origin = 'lsp'
+    if window.id() in window_file_diagnostics:
+        file_diagnostics = window_file_diagnostics[window.id()]
+        if file_path in file_diagnostics:
+            if origin in file_diagnostics[file_path]:
+                return file_diagnostics[file_path][origin]
+    return []
 
 
 class LspCodeActionsCommand(sublime_plugin.TextCommand):
@@ -1673,7 +1673,7 @@ class LspCodeActionsCommand(sublime_plugin.TextCommand):
         if client:
             pos = get_position(self.view, event)
             row, col = self.view.rowcol(pos)
-            line_diagnostics = get_line_diagnostics(self.view, row, col)
+            line_diagnostics = get_line_diagnostics(self.view, pos)
             params = {
                 "textDocument": {
                     "uri": filename_to_uri(self.view.file_name())
