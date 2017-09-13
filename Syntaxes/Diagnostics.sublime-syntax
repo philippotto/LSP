@@ -42,16 +42,16 @@ contexts:
 
   expect-diag-type:
     # See: https://github.com/sublimehq/Packages/issues/1036
-    # We use old markup scopes too so that old color schemes can catch up.
+    # We use sublimelinter markup scopes too so that old color schemes can catch up.
     - include: pop-at-end
     - match: \berror\b
-      scope: markup.error.lsp markup.deleted.lsp
+      scope: markup.deleted.lsp sublimelinter.mark.error markup.error.lsp
       pop: true
     - match: \bwarning\b
-      scope: markup.warning.lsp markup.heading.lsp
+      scope: markup.changed.lsp sublimelinter.mark.warning markup.warning.lsp
       pop: true
     - match: \binfo\b
-      scope: markup.info.lsp markup.inserted.lsp
+      scope: markup.inserted.lsp sublimelinter.gutter-mark markup.info.lsp
       pop: true
 
   expect-linter-type:
